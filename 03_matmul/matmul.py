@@ -2,6 +2,10 @@ import torch
 import triton
 import triton.language as tl
 
+"""
+Triton performs better than cuBLAS in float16 matmul on the RTX4090, that is impressive.
+The TFLOPS picture may demonstrate the effect of the wave quantization.
+"""
 
 device = torch.device("cuda:0")
 torch.manual_seed(42)
@@ -132,3 +136,43 @@ c_triton = matmul(a, b)
 torch.testing.assert_close(c_torch, c_triton, rtol=1e-2, atol=1e-2)
 
 print('Congratulations! Right result!')
+
+
+ref_lib = 'cuBLAS'
+
+
+configs = []
+
+for fp8_inputs in [False, True]:
+    configs.append(
+        triton.testing.Benchmark(
+            x_names=["M", "N", "K"],
+            x_vals=[128 * i for i in range(2, 33)],
+            line_arg="provider",
+            line_vals=["triton"] if fp8_inputs else [ref_lib.lower(), "triton"],
+            line_names=['Triton'] if fp8_inputs else [ref_lib, 'Triton'],
+            styles=[('green', '-'), ('blue', '-')],
+            ylabel='TFLOPS',
+            plot_name='matmul-performance-' + ("fp16" if not fp8_inputs else "fp8"),
+            args={"fp8_inputs": fp8_inputs},
+        )
+    )
+
+
+@triton.testing.perf_report(configs)
+def benchmark(M, N, K, provider, fp8_inputs):
+    a = torch.randn((M, K), device=device, dtype=torch.float16)
+    b = torch.randn((K, N), device=device, dtype=torch.float16)
+    if fp8_inputs:
+        a = a.to(torch.float8_e5m2)
+        b = b.T.to(torch.float8_e5m2)
+    quantiles = [0.5, 0.2, 0.8]
+    if provider == ref_lib.lower():
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.matmul(a, b), quantiles=quantiles)
+    if provider == 'triton':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: matmul(a, b), quantiles=quantiles)
+    perf = lambda ms: 2 * M * N * K * 1e-12 / (ms * 1e-3)
+    return perf(ms), perf(max_ms), perf(min_ms)
+
+
+benchmark.run(show_plots=True, print_data=True, save_path='./result')
