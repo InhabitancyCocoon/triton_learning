@@ -100,7 +100,7 @@ def matmul_kernel(
 
 
 @triton.jit
-def bias_kernel(
+def _bias_fwd(
     bias_ptr,
     wx_ptr,
     y_ptr,
@@ -122,6 +122,29 @@ def bias_kernel(
         tl.store(y_ptr + offs, y, mask=mask)
 
 
+@triton.jit
+def _bias_bwd(
+    DY,
+    DB,
+    M,
+    out_features,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_OUT: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    cols = pid * BLOCK_SIZE_OUT + tl.arange(0, BLOCK_SIZE_OUT)
+
+    db = tl.zeros((BLOCK_SIZE_OUT, ), dtype=tl.float32)
+
+    for cur_row in range(0, M, BLOCK_SIZE_M):
+        rows = cur_row + tl.arange(0, BLOCK_SIZE_M)
+        mask = (rows[:, None] < M) & (cols[None, :] < out_features)
+        offs = rows[:, None] * out_features + cols[None, :]
+        dy = tl.load(DY + offs, mask=mask, other=0.).to(tl.float32)
+        db += tl.sum(dy, axis=0)
+
+    tl.store(DB + cols, db, mask=cols < out_features)
+
 
 
 
@@ -140,7 +163,7 @@ class Linear(torch.autograd.Function):
             weight,
             wx,
             x.stride(0), x.stride(1),
-            1, in_features,
+            weight.stride(1), weight.stride(0),
             wx.stride(0), wx.stride(1),
             M, in_features, out_features,
         )
@@ -149,9 +172,9 @@ class Linear(torch.autograd.Function):
         BLOCK_SIZE_OUT = 128
 
         y = wx
-        grid = lambda meta: [triton.cdiv(out_features, BLOCK_SIZE_OUT)]
+        grid = lambda META: [triton.cdiv(out_features, META['BLOCK_SIZE_OUT'])]
 
-        bias_kernel[grid](
+        _bias_fwd[grid](
             bias,
             wx,
             y,
@@ -161,17 +184,64 @@ class Linear(torch.autograd.Function):
             BLOCK_SIZE_OUT=BLOCK_SIZE_OUT,
         )
 
-
-
-
         ctx.save_for_backward(x, weight, bias)
+        ctx.BLOCK_SIZE_M = 32
+        ctx.BLOCK_SIZE_OUT = 128
         return y
 
 
 
     @staticmethod
     def backward(ctx, dy):
-        pass
+        x, w, b = ctx.saved_tensors
+        M, in_features = x.shape
+        out_features, _ = w.shape
+
+        dx = torch.empty_like(x)
+        dw = torch.empty_like(w)
+        db = torch.empty_like(b)
+
+        # be very careful of the lambda
+        grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(in_features, META['BLOCK_SIZE_N']), )
+
+        # calculate dx = dy times w
+        matmul_kernel[grid](
+            dy,
+            w,
+            dx,
+            dy.stride(0), dy.stride(1),
+            w.stride(0), w.stride(1),
+            dx.stride(0), dx.stride(1),
+            M, out_features, in_features,
+        )
+
+
+        # dyt = dy.T.contiguous()
+        grid = lambda META: (triton.cdiv(out_features, META['BLOCK_SIZE_M']) * triton.cdiv(in_features, META['BLOCK_SIZE_N']), )
+
+        matmul_kernel[grid](
+            dy,
+            x,
+            dw,
+            dy.stride(1), dy.stride(0),
+            x.stride(0), x.stride(1),
+            dw.stride(0), dw.stride(1),
+            out_features, M, in_features,
+        )
+
+
+        # calculate db = reduce(dy, dim=0)
+        _bias_bwd[(triton.cdiv(out_features, ctx.BLOCK_SIZE_OUT), )](
+            dy,
+            db,
+            M,
+            out_features,
+            BLOCK_SIZE_M=ctx.BLOCK_SIZE_M,
+            BLOCK_SIZE_OUT=ctx.BLOCK_SIZE_OUT
+        )
+
+        return dx, dw, db
+
 
 
 linear = Linear.apply
@@ -189,9 +259,27 @@ def test_linear(M, in_features, out_features, dtype, device='cuda'):
     y_torch = torch.nn.functional.linear(x, weight=weight, bias=bias)
     y_triton = linear(x, weight, bias)
 
+    dy = torch.randn(M, out_features, device=device, dtype=dtype)
+
+    y_torch.backward(dy, retain_graph=True)
+    dx_torch, dw_torch, db_torch = [_.grad.clone() for _ in [x, weight, bias]]
+    x.grad, weight.grad, bias.grad = None, None, None
+
+    y_triton.backward(dy, retain_graph=True)
+    dx_triton, dw_triton, db_triton = [_.grad.clone() for _ in [x, weight, bias]]
+
 
     torch.testing.assert_close(y_triton, y_torch, atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(dx_triton, dx_torch, atol=1e-2, rtol=1e-2)
+
+    # torch.testing.assert_close(dy.T @ x, dw_torch, atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(dw_triton, dw_torch, atol=1e-2, rtol=1e-2)
+
+
+    torch.testing.assert_close(db_triton, db_torch, atol=1e-2, rtol=1e-2)
 
 
 
 test_linear(652, 256, 512, torch.float16)
+
+print("Congratulations, your triton based linear layer works fine!")
