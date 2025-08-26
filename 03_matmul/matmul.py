@@ -127,8 +127,8 @@ def matmul(a: torch.Tensor, b: torch.Tensor):
 
 
 
-a = torch.randn(512, 512, device=device, dtype=torch.float16)
-b = torch.randn(512, 512, device=device, dtype=torch.float16)
+a = torch.randn(512, 678, device=device, dtype=torch.float16)
+b = torch.randn(678, 256, device=device, dtype=torch.float16)
 c_torch = torch.matmul(a, b)
 c_triton = matmul(a, b)
 
