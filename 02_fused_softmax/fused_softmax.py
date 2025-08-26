@@ -87,7 +87,7 @@ def softmax(x: torch.Tensor) -> torch.Tensor:
     num_programs = min(num_programs, num_rows)
 
 
-    kernel[(num_programs, 1, 1)](x, output, row_stride, num_rows, num_cols)
+    kernel[(num_programs, 1, 1)](x, output, row_stride, num_rows, num_cols, BLOCK_SIZE, num_stages)
 
     return output
 
