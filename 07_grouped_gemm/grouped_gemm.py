@@ -36,6 +36,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 def is_cuda():
+    # seems this feature finally is merged into triton release version 3.4.0
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
@@ -47,6 +48,10 @@ def num_sms():
     if is_cuda():
         return torch.cuda.get_device_properties("cuda").multi_processor_count
     return 148
+
+
+print(f"This is a grouped matmul example, your device is cuda: {is_cuda()}, "
+      f"and supports tma: {supports_tma()}, the number of streaming multiprocessors is {num_sms()}")
 
 
 @triton.autotune(
