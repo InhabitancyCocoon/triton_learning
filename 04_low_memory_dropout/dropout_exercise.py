@@ -72,7 +72,7 @@ def seeded_dropout(input: torch.Tensor, p: float, seed: torch.Tensor) -> torch.T
 
     num_programs = min(num_programs, num_rows)
 
-    kernel[(num_programs, 1, 1)](input, output, p, seed, row_stride, num_rows, num_cols)
+    kernel[(num_programs, 1, 1)](input, output, p, seed, row_stride, num_rows, num_cols, BLOCK_SIZE, num_stages)
 
     return output
 
