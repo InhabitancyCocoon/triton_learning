@@ -132,10 +132,9 @@ b = torch.randn(512, 512, device=device, dtype=torch.float16)
 c_torch = torch.matmul(a, b)
 c_triton = matmul(a, b)
 
-# It is quite strange that, fp16 matmul can pass this test, while fp32 matmul can't.
-torch.testing.assert_close(c_torch, c_triton, rtol=1e-2, atol=1e-2)
+torch.testing.assert_close(c_torch, c_triton, rtol=1e-4, atol=1e-4)
 
-print('Congratulations! Right result!')
+print(f'Congratulations! {a.dtype}:  a {a.shape} @ b {b.shape} is right!')
 
 
 ref_lib = 'cuBLAS'
@@ -175,4 +174,4 @@ def benchmark(M, N, K, provider, fp8_inputs):
     return perf(ms), perf(max_ms), perf(min_ms)
 
 
-benchmark.run(show_plots=True, print_data=True, save_path='./result')
+# benchmark.run(show_plots=True, print_data=True, save_path='./result')
