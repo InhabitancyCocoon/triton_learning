@@ -1,11 +1,15 @@
 ## Triton self learning
 
+### Note
+
+- There are some accuracy problems with matmul and linear.
+
 ### environment
 
-triton 3.1.0  
-torch 2.5.1+cu124  
-cuda 12.4  
-RTX4090D, L20
+triton 3.4.0  
+torch 2.8.0+cu128
+cuda 12.8
+RTX5090
 
 
 ### link
