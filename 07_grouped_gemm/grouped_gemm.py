@@ -39,7 +39,7 @@ def is_cuda():
     # seems this feature finally is merged into triton release version 3.4.0
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
-
+# hmmm, I just asume blackwell also supports tma.
 def supports_tma():
     return is_cuda() and torch.cuda.get_device_capability()[0] >= 9
 
