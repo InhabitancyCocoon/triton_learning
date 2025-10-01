@@ -15,7 +15,7 @@ RTX5090  (capability 12.0)
 - Please check the corresponding version tag of triton tutorial, don't use main branch.
 - Some perfermance reports are weird. Please check the correctness.
 - The first param `torch.testing.assert_close()` is true value.
-- Be careful of the dtype used for input, computation and accumulation.
+- Be careful of the dtype used for input, computation, accumulation and the output.
 - Leave the ref link, it will help you in the future.
 
 
