@@ -108,7 +108,9 @@ def matmul_kernel(
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
 
+    # this is not necessary, here I only use this to remind myself.
     accumulator = accumulator.to(tl.float16)
+
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
@@ -139,7 +141,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor):
     return c
 
 
-# The accuracy drops with different shape settings, especially when K is large.
+# Note that this kernel only works for perfect shape.
 
 # fp16 test
 a = torch.randn(512, 256, device=device, dtype=torch.float16)
