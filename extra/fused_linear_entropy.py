@@ -43,8 +43,8 @@ class FusedLinearEntropy(torch.autograd.Function):
         label: torch.Tensor,
         reduction: str,
     ):
-        assert reduction in ["mean", "none", "sum"], "Supported reduction must be: " \
-                                                     "mean, none, sum"
+        assert reduction in ["mean", "sum"], "Supported reduction must be: " \
+                                                     "mean, sum"
 
         # linear y = x @ weight.T + bias
         logit = input @ weight.T + bias[None, :]  # N x C
@@ -74,8 +74,6 @@ class FusedLinearEntropy(torch.autograd.Function):
 
         if reduction == 'mean':
             return cross_entropy.mean()
-        elif reduction == 'none':
-            return cross_entropy
         elif reduction == 'sum':
             return cross_entropy.sum()
 
@@ -97,8 +95,6 @@ class FusedLinearEntropy(torch.autograd.Function):
             grad_reduction = torch.empty(ctx.num_tokens, device=input.device).fill_(1.0 / ctx.num_tokens)
         elif ctx.reduction == "sum":
             grad_reduction = torch.ones(ctx.num_tokens, device=input.device)
-        else:
-            grad_reduction = grad_output
 
         # gather backward
         grad_gather = torch.zeros(ctx.num_tokens, ctx.vocab_size, device=input.device)
@@ -142,7 +138,7 @@ def ref_torch_linear_entropy(
         [1, 4, 7, 11, 256, 257],
         [1, 3, 7, 16],
         [1, 255, 512, 1023],
-        ["mean", "sum", "none"],
+        ["mean", "sum"],  # we assume the output of fused linear entropy is a scalar.
     )
 )
 def test_linear_entropy(B, SEQ, H, num_classes, reduction):
