@@ -59,8 +59,8 @@ def get_cuda_autotune_config():
     ]
 
 @triton.autotune(
-        configs=get_cuda_autotune_config(),
-        key=['M', 'N', 'K'],
+    configs=get_cuda_autotune_config(),
+    key=['M', 'N', 'K'],
 )
 @triton.jit
 def matmul_kernel(
