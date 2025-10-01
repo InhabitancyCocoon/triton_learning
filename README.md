@@ -15,10 +15,27 @@ RTX5090  (capability 12.0)
 - Please check the corresponding version tag of triton tutorial, don't use main branch.
 - Some perfermance reports are weird.
 
+
+
+### set up
+
+- linux bash shell settings
+
+```
+export PS1="\u@\h:\W> " (\W only display current directory)
+export PS1="\u:\W> "
+
+```
+
+- query the device capability
+
 ```
 import torch
 torch.cuda.get_device_capability()
 ```
+
+- check [autodl github](https://www.autodl.com/docs/network_turbo/) for github access `source /etc/network_turbo`
+
 
 ### link
 
