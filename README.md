@@ -16,6 +16,7 @@ RTX5090  (capability 12.0)
 - Some perfermance reports are weird. Please check the correctness.
 - The first param `torch.testing.assert_close()` is true value.
 - Be careful of the dtype used for input, computation, accumulation and the output.
+- Be careful of the alignment and edge case.
 - Leave the ref link, it will help you in the future.
 
 
