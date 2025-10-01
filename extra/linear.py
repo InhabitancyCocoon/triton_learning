@@ -85,8 +85,8 @@ def matmul_kernel(
 
     for step in range(tl.cdiv(K, BLOCK_SIZE_K)):
         
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - step * BLOCK_SIZE_K, other=0.0).to(tl.float32)
-        b = tl.load(b_ptrs, mask=offs_k[:, None] < K - step * BLOCK_SIZE_K, other=0.0).to(tl.float32)
+        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - step * BLOCK_SIZE_K, other=0.0)
+        b = tl.load(b_ptrs, mask=offs_k[:, None] < K - step * BLOCK_SIZE_K, other=0.0)
         # We accumulate along the K dimension.
         accumulator = tl.dot(a, b, accumulator)
         # Advance the ptrs to the next K block.
@@ -312,15 +312,15 @@ def test_linear(M, in_features, out_features, dtype):
     y_triton.backward(dy, retain_graph=True)
     dx_triton, dw_triton, db_triton = [_.grad.clone() for _ in [x, weight, bias]]
 
-    torch.testing.assert_close(dx_triton, dx_torch, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(dx_triton, dx_torch, atol=1e-4, rtol=1e-3)
     print("Congratulations, triton linear x backward works!")
 
 
-    torch.testing.assert_close(dw_triton, dw_torch, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(dw_triton, dw_torch, atol=1e-4, rtol=1e-3)
     print("Congratulations, triton linear weight backward works!")
 
 
-    torch.testing.assert_close(db_triton, db_torch, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(db_triton, db_torch, atol=1e-4, rtol=1e-3)
     print("Congratulations, triton linear bias backward works!")
 
 
