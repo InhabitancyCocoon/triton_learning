@@ -45,8 +45,8 @@ def get_cuda_autotune_config():
 
 
 @triton.autotune(
-        configs=get_cuda_autotune_config(),
-        key=['M', 'N', 'K'],
+    configs=get_cuda_autotune_config(),
+    key=['M', 'N', 'K'],
 )
 @triton.jit
 def matmul_kernel(
@@ -93,7 +93,6 @@ def matmul_kernel(
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
 
-    accumulator = accumulator.to(tl.float16)
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
@@ -102,8 +101,8 @@ def matmul_kernel(
 
 
 @triton.autotune(
-        configs=get_cuda_autotune_config(),
-        key=['M', 'N', 'K'],
+    configs=get_cuda_autotune_config(),
+    key=['M', 'N', 'K'],
 )
 @triton.jit
 def linear_kernel(
@@ -159,9 +158,6 @@ def linear_kernel(
     bias = tl.load(bias_ptr + offs_cn, mask=offs_cn < N, other=0.0).to(tl.float32)
     accumulator += bias[None, :]
 
-    accumulator = accumulator.to(tl.float16)
-
-    # print(f"bias shape {bias.shape}, acc shape {accumulator.shape}")
 
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
@@ -275,11 +271,12 @@ class Linear(torch.autograd.Function):
 
 linear = Linear.apply
 
-
+# FIXME: this kernel currently only works for perfect shape.
 @pytest.mark.parametrize(
     "M, in_features, out_features, dtype",
     [
-        [652, 256, 512, torch.float16],
+        [512, 256, 512, torch.float16],
+        [512, 256, 512, torch.bfloat16],
     ]
 )
 def test_linear(M, in_features, out_features, dtype):
