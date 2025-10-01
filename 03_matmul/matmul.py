@@ -3,12 +3,22 @@ import triton
 import triton.language as tl
 
 """
-Triton performs better than cuBLAS in float16 matmul on the RTX4090, that is impressive.
-The TFLOPS picture may demonstrate the effect of the wave quantization.
+note:
+fp16 input or fp8 input,
+fp16 output
+
+it seems strange that the fp8 matmul roughly has the same flops as fp16 version...
+
+ref link:
+
+https://triton-lang.org/main/python-api/generated/triton.testing.Benchmark.html
 """
 
 device = torch.device("cuda:0")
 torch.manual_seed(42)
+
+def is_cuda():
+    return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
 def get_cuda_autotune_config():
@@ -89,6 +99,7 @@ def matmul_kernel(
 
     for step in range(tl.cdiv(K, BLOCK_SIZE_K)):
         
+        # fp8 gemm or fp16 gemm happens here.
         a = tl.load(a_ptrs, mask=offs_k[None, :] < K - step * BLOCK_SIZE_K, other=0.0)
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K - step * BLOCK_SIZE_K, other=0.0)
         # We accumulate along the K dimension.
@@ -110,7 +121,9 @@ def matmul(a: torch.Tensor, b: torch.Tensor):
     N = b.shape[1]
     assert K == b.shape[0]
     assert a.is_contiguous()
-    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+    assert a.dtype == b.dtype
+    assert a.dtype in [torch.float16, torch.float8_e5m2]
+    c = torch.empty((M, N), device=a.device, dtype=torch.float16)
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
 
@@ -127,14 +140,40 @@ def matmul(a: torch.Tensor, b: torch.Tensor):
 
 
 # The accuracy drops with different shape settings, especially when K is large.
-a = torch.randn(512, 512, device=device, dtype=torch.float16)
-b = torch.randn(512, 512, device=device, dtype=torch.float16)
-c_torch = torch.matmul(a, b)
-c_triton = matmul(a, b)
 
-torch.testing.assert_close(c_torch, c_triton, rtol=0, atol=1e-4)
+# fp16 test
+a = torch.randn(512, 256, device=device, dtype=torch.float16)
+b = torch.randn(256, 512, device=device, dtype=torch.float16)
+torch_output = torch.matmul(a, b)
+triton_output = matmul(a, b)
+
+torch.testing.assert_close(torch_output, triton_output, rtol=0, atol=1e-4)
 
 print(f'Congratulations! {a.dtype}:  a {a.shape} @ b {b.shape} is right!')
+
+
+# fp8 test
+TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
+if TORCH_HAS_FP8 and is_cuda():
+    torch.manual_seed(0)
+    a = torch.rand((512, 256), device=device, dtype=torch.float16) * 16
+    b = torch.rand((512, 256), device=device, dtype=torch.float16) * 16  # As triton tutoria said: this is for efficiency.
+
+    a = a.to(torch.float8_e5m2)
+    b = b.T  # As triton tutoria said: this is for efficiency.
+    b = b.to(torch.float8_e5m2)
+
+    triton_output = matmul(a, b)
+    torch_output = torch.matmul(a.to(torch.float16), b.to(torch.float16))
+
+    print(f"triton_output_with_fp8_inputs={triton_output}")
+    print(f"torch_output_with_fp8_inputs={torch_output}")
+
+    if torch.allclose(triton_output, torch_output, atol=0.125, rtol=0):
+        print("✅ fp8 Triton and Torch match")
+    else:
+        print("❌ fp8 Triton and Torch differ")
+
 
 
 ref_lib = 'cuBLAS'
@@ -164,6 +203,7 @@ def benchmark(M, N, K, provider, fp8_inputs):
     b = torch.randn((K, N), device=device, dtype=torch.float16)
     if fp8_inputs:
         a = a.to(torch.float8_e5m2)
+        # M, N, K has the same value, so it may look strange but it works...
         b = b.T.to(torch.float8_e5m2)
     quantiles = [0.5, 0.2, 0.8]
     if provider == ref_lib.lower():
