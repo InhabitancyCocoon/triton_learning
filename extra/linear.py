@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 from triton.runtime import driver
 import pytest
+import itertools
 
 torch.manual_seed(43)
 
@@ -122,6 +123,7 @@ def linear_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
+    # swizzle2d
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -134,16 +136,25 @@ def linear_kernel(
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
-    offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+    offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))
+    offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))
+
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
     for step in range(tl.cdiv(K, BLOCK_SIZE_K)):
-        
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - step * BLOCK_SIZE_K, other=0.0)
-        b = tl.load(b_ptrs, mask=offs_k[:, None] < K - step * BLOCK_SIZE_K, other=0.0)
+        a_row_mask = offs_am[:, None] < M
+        a_col_mask = offs_k[None, :] < K - step * BLOCK_SIZE_K
+
+        b_row_mask = offs_k[:, None] < K - step * BLOCK_SIZE_K
+        b_col_mask = offs_bn[None, :] < N      
+
+
+        # fp8 gemm or fp16 gemm happens here.
+        a = tl.load(a_ptrs, mask=a_row_mask & a_col_mask, other=0.0)
+        b = tl.load(b_ptrs, mask=b_row_mask & b_col_mask, other=0.0)
+
         # We accumulate along the K dimension.
         accumulator = tl.dot(a, b, accumulator)
         # Advance the ptrs to the next K block.
@@ -271,13 +282,15 @@ class Linear(torch.autograd.Function):
 
 linear = Linear.apply
 
-# FIXME: this kernel currently only works for perfect shape.
+
 @pytest.mark.parametrize(
     "M, in_features, out_features, dtype",
-    [
-        [512, 256, 512, torch.float16],
-        [512, 256, 512, torch.bfloat16],
-    ]
+    itertools.product(
+        [1, 24, 256, 257],
+        [1, 7, 18, 255, 256],
+        [1, 27, 32, 235, 256],
+        [torch.float16, torch.bfloat16]
+    )
 )
 def test_linear(M, in_features, out_features, dtype):
     device = "cuda"

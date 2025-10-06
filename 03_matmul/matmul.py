@@ -1,6 +1,8 @@
 import torch
 import triton
 import triton.language as tl
+import pytest
+import itertools
 
 """
 note:
@@ -79,6 +81,7 @@ def matmul_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
 ):
+    # swizzle2d
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -91,17 +94,25 @@ def matmul_kernel(
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
-    offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+    offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))
+    offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))
+
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
     for step in range(tl.cdiv(K, BLOCK_SIZE_K)):
-        
+        a_row_mask = offs_am[:, None] < M
+        a_col_mask = offs_k[None, :] < K - step * BLOCK_SIZE_K
+
+        b_row_mask = offs_k[:, None] < K - step * BLOCK_SIZE_K
+        b_col_mask = offs_bn[None, :] < N      
+
+
         # fp8 gemm or fp16 gemm happens here.
-        a = tl.load(a_ptrs, mask=offs_k[None, :] < K - step * BLOCK_SIZE_K, other=0.0)
-        b = tl.load(b_ptrs, mask=offs_k[:, None] < K - step * BLOCK_SIZE_K, other=0.0)
+        a = tl.load(a_ptrs, mask=a_row_mask & a_col_mask, other=0.0)
+        b = tl.load(b_ptrs, mask=b_row_mask & b_col_mask, other=0.0)
+
         # We accumulate along the K dimension.
         accumulator = tl.dot(a, b, accumulator)
         # Advance the ptrs to the next K block.
@@ -119,6 +130,9 @@ def matmul_kernel(
 
 
 def matmul(a: torch.Tensor, b: torch.Tensor):
+    """
+    fp8 or float16 in, fp16 out
+    """
     M, K = a.shape
     N = b.shape[1]
     assert K == b.shape[0]
@@ -141,40 +155,42 @@ def matmul(a: torch.Tensor, b: torch.Tensor):
     return c
 
 
-# Note that this kernel only works for perfect shape.
 
 # fp16 test
-a = torch.randn(512, 256, device=device, dtype=torch.float16)
-b = torch.randn(256, 512, device=device, dtype=torch.float16)
-torch_output = torch.matmul(a, b)
-triton_output = matmul(a, b)
 
-torch.testing.assert_close(torch_output, triton_output, rtol=0, atol=1e-4)
+@pytest.mark.parametrize(
+    "M, K, N, dtype",
+    itertools.product(
+        [1, 24, 31, 256, 257],
+        [1, 7, 9, 18, 255, 256],
+        [1, 27, 33, 235, 256],
+        [torch.float16, torch.float8_e5m2]
+    )
+)
+def test_matmul(M, K, N, dtype):
+    
 
-print(f'Congratulations! {a.dtype}:  a {a.shape} @ b {b.shape} is right!')
-
-
-# fp8 test
-TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
-if TORCH_HAS_FP8 and is_cuda():
-    torch.manual_seed(0)
-    a = torch.rand((512, 256), device=device, dtype=torch.float16) * 16
-    b = torch.rand((512, 256), device=device, dtype=torch.float16) * 16  # As triton tutoria said: this is for efficiency.
-
-    a = a.to(torch.float8_e5m2)
-    b = b.T  # As triton tutoria said: this is for efficiency.
-    b = b.to(torch.float8_e5m2)
-
-    triton_output = matmul(a, b)
-    torch_output = torch.matmul(a.to(torch.float16), b.to(torch.float16))
-
-    print(f"triton_output_with_fp8_inputs={triton_output}")
-    print(f"torch_output_with_fp8_inputs={torch_output}")
-
-    if torch.allclose(triton_output, torch_output, atol=0.125, rtol=0):
-        print("✅ fp8 Triton and Torch match")
+    if dtype == torch.float8_e5m2:
+        a = torch.randn(M, K, device=device, dtype=torch.float16)
+        b = torch.randn(N, K, device=device, dtype=torch.float16)
+        a = a * 8
+        a = a.to(torch.float8_e5m2)
+        b = b * 8
+        b = b.T
+        b = b.to(torch.float8_e5m2)
+        torch_output = torch.matmul(a.to(torch.float16), b.to(torch.float16))
     else:
-        print("❌ fp8 Triton and Torch differ")
+        a = torch.randn(M, K, device=device, dtype=torch.float16)
+        b = torch.randn(K, N, device=device, dtype=torch.float16)
+        torch_output = torch.matmul(a, b)
+
+    
+    triton_output = matmul(a, b)
+
+    rtol = 1e-2 if dtype == torch.float16 else 0.125
+    atol = 1e-2 if dtype == torch.float16 else 0
+
+    torch.testing.assert_close(torch_output, triton_output, rtol=rtol, atol=atol)
 
 
 
@@ -216,4 +232,5 @@ def benchmark(M, N, K, provider, fp8_inputs):
     return perf(ms), perf(max_ms), perf(min_ms)
 
 
-benchmark.run(show_plots=True, print_data=True, save_path='./result')
+if __name__ == "__main__":
+    benchmark.run(show_plots=True, print_data=True, save_path='./result')
