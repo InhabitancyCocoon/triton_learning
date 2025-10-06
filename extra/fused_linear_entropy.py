@@ -105,7 +105,7 @@ class FusedLinearEntropy(torch.autograd.Function):
 
         grad_softmax = (scale * logit_softmax).scatter_add_(dim=1, index=label[:, None], src=-grad_reduction[:, None])
 
-        # linear backward, use the matmul kernel in /extra/linear.py
+        # linear backward, use the kernel in /extra/linear.py
 
 
         grad_input = grad_softmax @ weight
