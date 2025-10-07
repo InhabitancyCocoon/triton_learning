@@ -5,6 +5,17 @@ from triton.runtime import driver
 import pytest
 import itertools
 
+"""
+
+note:
+
+fp16 input
+fp32 accumulate
+fp16 output
+
+"""
+
+
 torch.manual_seed(43)
 
 def get_cuda_autotune_config():
