@@ -6,7 +6,7 @@ import itertools
 
 """
 note:
-fp16 input or fp8 input,
+fp16 input or fp8 input, fp32 accumulate
 fp16 output
 
 it seems strange that the fp8 matmul roughly has the same flops as fp16 version...
