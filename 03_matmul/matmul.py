@@ -156,7 +156,7 @@ def matmul(a: torch.Tensor, b: torch.Tensor):
 
 
 
-# fp16 test
+# some precision problem, has something to do with pytest, triton and fp8 overflow/underflow.
 
 @pytest.mark.parametrize(
     "M, K, N, dtype",
