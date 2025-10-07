@@ -19,6 +19,7 @@ RTX5090  (capability 12.0)
 - Be careful of the alignment and edge case.
 - Leave the ref link, it will help you in the future.
 - Use ` ls ~/.triton/cache` to check the kernel compilation cache.
+- Triton kernel is useful for highly fused and customized operation.
 
 
 
