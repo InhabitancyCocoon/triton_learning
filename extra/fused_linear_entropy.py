@@ -5,6 +5,11 @@ TODO:
 cutlass, cute
 fp8, wait, it doesn't seem rational to compute cross entropy with fp8 precision.
 
+(input, accumulate, forward loss)
+(fp32, fp32, fp32)
+(bf16, fp32, fp32)
+(fp16, fp32, fp32)
+
 ref link:
 
 https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/fused_linear_cross_entropy.py
@@ -49,6 +54,53 @@ class FusedLinearEntropy(torch.autograd.Function):
         assert reduction in ["mean", "sum"], "Supported reduction must be: " \
                                                      "mean, sum"
 
+        # Optimization 2: as we always return a scalar, we can compute the final result step by step.
+        # Here I just copy the chunk logic from liger kernel.
+
+        num_tokens, H = input.shape
+        vocab_size = weight.shape[0]
+
+        if reduction == "mean":
+            scale = 1.0 / num_tokens
+        elif reduction == "sum":
+            scale = 1.0
+
+        inc_factor = triton.cdiv(vocab_size, H)  # (V + H - 1) // H
+        chunk_size = triton.next_power_of_2(triton.cdiv(num_tokens, inc_factor))  # (BT + inc_factor - 1) // inc_factor
+        num_chunks = triton.cdiv(num_tokens, chunk_size)  # (BT + chunk_size - 1) // chunk_size
+
+        loss_per_token = torch.empty(num_tokens, dtype=torch.float32, device=input.device)
+
+        # TODO: compute the gradient during the forward pass.
+        grad_input = torch.zeros_like(input)
+        grad_weight = torch.zeros_like(weight, dtype=torch.float32)
+
+        for chunk_id in range(num_chunks):
+            start_token_idx = chunk_id * chunk_size
+            end_token_idx = min((chunk_id + 1) * chunk_size, num_tokens)
+            input_chunk = input[start_token_idx : end_token_idx]
+            label_chunk = label[start_token_idx : end_token_idx]
+
+            logit_chunk = input_chunk @ weight.T + bias[None, :]
+            logit_chunk_row_max = logit_chunk.max(dim=1, keepdim=True).values
+
+            logit_chunk = logit_chunk - logit_chunk_row_max
+            logit_chunk_exp = logit_chunk.exp()
+            logit_chunk_exp_row_sum = logit_chunk_exp.sum(dim=1, keepdim=True)
+            logit_chunk_softmax = logit_chunk_exp / logit_chunk_exp_row_sum
+
+
+            logit_chunk_log_softmax = logit_chunk_softmax.log()
+            chunk_cross_entropy = -logit_chunk_log_softmax.gather(dim=1, index=label_chunk[:, None]).squeeze(1)
+
+            loss_per_token[start_token_idx : end_token_idx] = chunk_cross_entropy
+
+        
+        ctx.num_tokens = num_tokens
+        ctx.H = H
+        ctx.vocab_size = vocab_size
+        ctx.reduction = reduction
+
         # linear y = x @ weight.T + bias
         logit = input @ weight.T + bias[None, :]  # N x C
         logit_row_max = logit.max(dim=1, keepdim=True).values
@@ -58,16 +110,7 @@ class FusedLinearEntropy(torch.autograd.Function):
         logit_exp = logit.exp()
         logit_exp_row_sum = logit_exp.sum(dim=1, keepdim=True)
         logit_softmax = logit_exp / logit_exp_row_sum
-
-        # log
-        logit_log_softmax = logit_softmax.log()
-        cross_entropy = -logit_log_softmax.gather(dim=1, index=label[:, None]).squeeze(1)
-
-        ctx.num_tokens = input.shape[0]
-        ctx.H = input.shape[1]
-        ctx.vocab_size = weight.shape[0]
-        ctx.reduction = reduction
-
+        
         ctx.save_for_backward(
             input,
             weight,
@@ -75,10 +118,10 @@ class FusedLinearEntropy(torch.autograd.Function):
             logit_softmax
         )  # should be called only once
 
-        if reduction == 'mean':
-            return cross_entropy.mean()
-        elif reduction == 'sum':
-            return cross_entropy.sum()
+        if reduction == "mean":
+            return loss_per_token.mean()
+        else:
+            return loss_per_token.sum()
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -172,4 +215,4 @@ def test_linear_entropy(B, SEQ, H, num_classes, reduction):
 
 
 if __name__ == "__main__":
-    test_linear_entropy(3, 16, 32, 7, "mean")
+    test_linear_entropy(32, 512, 64, 1936, "mean")
