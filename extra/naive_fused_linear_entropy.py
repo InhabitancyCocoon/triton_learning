@@ -1,11 +1,6 @@
 """
 
-TODO:
-amp, bf16 input output, fp32 accumulator
-triton kernel
-efficient implementation of fused linear entropy
-cutlass, cute
-fp8?
+fp32 ground truth
 
 ref link:
 
