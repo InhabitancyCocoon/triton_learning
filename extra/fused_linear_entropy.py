@@ -3,7 +3,7 @@
 TODO:
 
 cutlass, cute
-fp8?
+fp8, wait, it doesn't seem rational to compute cross entropy with fp8 precision.
 
 ref link:
 
