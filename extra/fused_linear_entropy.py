@@ -3,6 +3,7 @@
 TODO:
 
 cutlass, cute
+bf16 or fp16 ?
 fp8, wait, it doesn't seem rational to compute cross entropy with fp8 precision.
 
 ref link:
@@ -20,6 +21,8 @@ https://docs.pytorch.org/docs/stable/generated/torch.gather.html
 https://www.cnblogs.com/zzk0/p/15173022.html
 
 https://docs.pytorch.org/docs/stable/amp.html
+
+https://docs.pytorch.org/docs/stable/generated/torch.chunk.html
 
 """
 
@@ -49,6 +52,9 @@ class FusedLinearEntropy(torch.autograd.Function):
         assert reduction in ["mean", "sum"], "Supported reduction must be: " \
                                                      "mean, sum"
 
+
+        for i, chunk_input in enumerate(torch.tensor_split(input, ))
+
         # linear y = x @ weight.T + bias
         logit = input @ weight.T + bias[None, :]  # N x C
         logit_row_max = logit.max(dim=1, keepdim=True).values
@@ -75,6 +81,7 @@ class FusedLinearEntropy(torch.autograd.Function):
             logit_softmax
         )  # should be called only once
 
+        # Optimization 2: as we always return a scalar, we can compute the final result step by step.
         if reduction == 'mean':
             return cross_entropy.mean()
         elif reduction == 'sum':
@@ -135,7 +142,7 @@ def ref_torch_linear_entropy(
 @pytest.mark.parametrize(
     "B, SEQ, H, num_classes, reduction",
     itertools.product(
-        [1, 8, 17, 33],
+        [1, 8, 17, 255],
         [1, 4, 7, 11, 256, 257],
         [1, 3, 7, 16],
         [1, 255, 512, 1023],
