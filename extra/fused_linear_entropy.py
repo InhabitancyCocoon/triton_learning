@@ -71,51 +71,54 @@ class FusedLinearEntropy(torch.autograd.Function):
 
         loss_per_token = torch.empty(num_tokens, dtype=torch.float32, device=input.device)
 
-        # TODO: compute the gradient during the forward pass.
-        grad_input = torch.zeros_like(input)
+        grad_input = torch.empty_like(input)
         grad_weight = torch.zeros_like(weight, dtype=torch.float32)
+        grad_bias = torch.zeros_like(bias)
 
         for chunk_id in range(num_chunks):
             start_token_idx = chunk_id * chunk_size
             end_token_idx = min((chunk_id + 1) * chunk_size, num_tokens)
-            input_chunk = input[start_token_idx : end_token_idx]
-            label_chunk = label[start_token_idx : end_token_idx]
 
-            logit_chunk = input_chunk @ weight.T + bias[None, :]
-            logit_chunk_row_max = logit_chunk.max(dim=1, keepdim=True).values
+            chunk_input = input[start_token_idx : end_token_idx]
+            chunk_label = label[start_token_idx : end_token_idx]
 
-            logit_chunk = logit_chunk - logit_chunk_row_max
-            logit_chunk_exp = logit_chunk.exp()
-            logit_chunk_exp_row_sum = logit_chunk_exp.sum(dim=1, keepdim=True)
-            logit_chunk_softmax = logit_chunk_exp / logit_chunk_exp_row_sum
+            chunk_logit = chunk_input @ weight.T + bias[None, :]
+            chunk_logit_row_max = chunk_logit.max(dim=1, keepdim=True).values
 
+            chunk_logit = chunk_logit - chunk_logit_row_max
+            chunk_logit_exp = chunk_logit.exp()
+            chunk_logit_exp_row_sum = chunk_logit_exp.sum(dim=1, keepdim=True)
+            chunk_logit_softmax = chunk_logit_exp / chunk_logit_exp_row_sum
 
-            logit_chunk_log_softmax = logit_chunk_softmax.log()
-            chunk_cross_entropy = -logit_chunk_log_softmax.gather(dim=1, index=label_chunk[:, None]).squeeze(1)
+            chunk_cross_entropy = - chunk_logit_softmax.log() \
+                                                       .gather(dim=1,index=chunk_label[:, None]) \
+                                                       .squeeze(1)
 
             loss_per_token[start_token_idx : end_token_idx] = chunk_cross_entropy
+
+
+            chunk_logit_softmax.scatter_add_(
+                dim=1, index=chunk_label[:, None], src=-torch.ones_like(chunk_logit_softmax)
+            )
+
+            chunk_grad_softmax = chunk_logit_softmax * scale
+
+            # chunk linear backward
+            chunk_grad_input = chunk_grad_softmax @ weight
+            grad_input[start_token_idx : end_token_idx] = chunk_grad_input
+            grad_weight += chunk_grad_softmax.T @ chunk_input
+            grad_bias += torch.sum(chunk_grad_softmax, dim=0)
 
         
         ctx.num_tokens = num_tokens
         ctx.H = H
         ctx.vocab_size = vocab_size
         ctx.reduction = reduction
-
-        # linear y = x @ weight.T + bias
-        logit = input @ weight.T + bias[None, :]  # N x C
-        logit_row_max = logit.max(dim=1, keepdim=True).values
-
-        # stable row-wise softmax
-        logit = logit - logit_row_max
-        logit_exp = logit.exp()
-        logit_exp_row_sum = logit_exp.sum(dim=1, keepdim=True)
-        logit_softmax = logit_exp / logit_exp_row_sum
         
         ctx.save_for_backward(
-            input,
-            weight,
-            label,
-            logit_softmax
+            grad_input,
+            grad_weight,
+            grad_bias
         )  # should be called only once
 
         if reduction == "mean":
@@ -125,36 +128,7 @@ class FusedLinearEntropy(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        """
-        If the forward output is a scalar, grad_output is a tensor scalar with value 1,
-        else the grad_output is a tensor with same shape as the forward output.
-        """
-        grad_input = grad_weight = grad_bias = None
-        (
-            input,
-            weight,
-            label,
-            logit_softmax,
-        ) = ctx.saved_tensors
-
-        if ctx.reduction == "mean":
-            scale = 1.0 / ctx.num_tokens
-            grad_reduction = torch.empty(ctx.num_tokens, device=input.device).fill_(1.0 / ctx.num_tokens)
-        elif ctx.reduction == "sum":
-            scale = 1.0
-            grad_reduction = torch.ones(ctx.num_tokens, device=input.device)
-
-        # Optimization 1: compute the grad_softmax in-place, some smart math happens here.
-
-        grad_softmax = (scale * logit_softmax).scatter_add_(dim=1, index=label[:, None], src=-grad_reduction[:, None])
-
-        # linear backward, use the kernel in /extra/linear.py
-
-
-        grad_input = grad_softmax @ weight
-        grad_weight = grad_softmax.T @ input
-        grad_bias = grad_softmax.sum(dim=0)
-
+        grad_input, grad_weight, grad_bias = ctx.saved_tensors
         return grad_input, grad_weight, grad_bias, None, None
 
 
