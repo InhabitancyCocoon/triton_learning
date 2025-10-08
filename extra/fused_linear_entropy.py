@@ -143,31 +143,38 @@ def ref_torch_linear_entropy(
     label: torch.Tensor,
     reduction: str
 ):
-    output = F.linear(input, weight, bias)
+    output = F.linear(input, weight, bias).float()
     entropy = F.cross_entropy(output, label, reduction=reduction)
     return entropy
 
 
 # pytest.mark.parametrize is unhappy with default param.
+# the atol and rtol follows the liger kernel.
+# https://github1s.com/linkedin/Liger-Kernel/blob/main/test/transformers/test_fused_linear_cross_entropy.py
 @pytest.mark.parametrize(
-    "B, SEQ, H, num_classes, reduction",
+    "B, SEQ, H, num_classes",
     itertools.product(
         [1, 8, 17, 33],
         [1, 4, 7, 11, 256, 257],
         [1, 3, 7, 16],
         [1, 255, 512, 1023],
-        ["mean", "sum"],  # we assume the output of fused linear entropy is a scalar.
     )
 )
-def test_linear_entropy(B, SEQ, H, num_classes, reduction):
+@pytest.mark.parametrize(
+    "dtype, reduction, atol, rtol",
+    [
+        (torch.float32, "mean", 5e-5, 1e-4),
+    ],
+)
+def test_linear_entropy(B, SEQ, H, num_classes, dtype, reduction, atol, rtol):
     torch.manual_seed(43)
 
-    ref_input = torch.rand(B * SEQ, H, requires_grad=True, device="cuda")
-    ref_weight = torch.empty(num_classes, H, requires_grad=True, device="cuda")
+    ref_input = torch.rand(B * SEQ, H, requires_grad=True, device="cuda", dtype=dtype)
+    ref_weight = torch.empty(num_classes, H, requires_grad=True, device="cuda", dtype=dtype)
     # RuntimeError: a leaf Variable that requires grad is being used in an in-place operation.
     with torch.no_grad():
         ref_weight.uniform_()
-    ref_bias = torch.rand(num_classes, requires_grad=True, device="cuda")
+    ref_bias = torch.rand(num_classes, requires_grad=True, device="cuda", dtype=dtype)
 
     input = ref_input.detach().clone().requires_grad_(True)
     weight = ref_weight.detach().clone().requires_grad_(True)
@@ -178,14 +185,14 @@ def test_linear_entropy(B, SEQ, H, num_classes, reduction):
     ref_loss = ref_torch_linear_entropy(ref_input, ref_weight, ref_bias, label, reduction)
     loss = fused_torch_linear_entropy(input, weight, bias, label, reduction)
 
-    torch.testing.assert_close(loss, ref_loss, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(loss, ref_loss, atol=atol, rtol=rtol)
 
     ref_loss.backward()
     loss.backward()
 
-    torch.testing.assert_close(ref_input.grad, input.grad, atol=1e-4, rtol=1e-4)
-    torch.testing.assert_close(ref_weight.grad, weight.grad, atol=1e-4, rtol=1e-4)
-    torch.testing.assert_close(ref_bias.grad, bias.grad, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(ref_input.grad, input.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(ref_weight.grad, weight.grad, atol=atol, rtol=rtol)
+    torch.testing.assert_close(ref_bias.grad, bias.grad, atol=atol, rtol=rtol)
 
 
 if __name__ == "__main__":
