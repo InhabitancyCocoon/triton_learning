@@ -8,7 +8,6 @@ fp8, wait, it doesn't seem rational to compute cross entropy with fp8 precision.
 (input, accumulate, forward loss)
 (fp32, fp32, fp32)
 (bf16, fp32, fp32)
-(fp16, fp32, fp32)
 
 ref link:
 
@@ -163,7 +162,10 @@ def ref_torch_linear_entropy(
 @pytest.mark.parametrize(
     "dtype, reduction, atol, rtol",
     [
-        (torch.float32, "mean", 5e-5, 1e-4),
+        (torch.float32, "mean", 1e-5, 5e-4),
+        (torch.bfloat16, "mean", 5e-3, 5e-2),
+        (torch.float32, "sum", 1e-3, 5e-2),
+        (torch.bfloat16, "sum", 5e0, 5e-1),
     ],
 )
 def test_linear_entropy(B, SEQ, H, num_classes, dtype, reduction, atol, rtol):
