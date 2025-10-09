@@ -37,6 +37,25 @@ import triton.language as tl
 from torch.nn import functional as F
 
 
+# The hard limit of TRITON_MAX_TENSOR_NUMEL is 1048576 https://github.com/triton-lang/triton/blob/ba42a5c68fd0505f8c42f4202d53be0f8d9a5fe0/python/triton/language/core.py#L19
+# However, setting limit as 65536 as in LayerNorm tutorial is faster because of less register spilling
+# The optimal maximum block size depends on your hardware, your kernel, and your dtype
+MAX_FUSED_SIZE = 65536 // 2
+
+
+@triton.jit
+def _entropy_fwd_bwd_kernel(
+    logit_ptr,
+    label_ptr,
+    loss_ptr,
+    scale,
+    logit_row_stride,
+    logit_col_stride,
+    VOCAB_SIZE: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    pass
+
 
 class FusedLinearEntropy(torch.autograd.Function):
     """
@@ -79,17 +98,34 @@ class FusedLinearEntropy(torch.autograd.Function):
         for chunk_id in range(num_chunks):
             start_token_idx = chunk_id * chunk_size
             end_token_idx = min((chunk_id + 1) * chunk_size, num_tokens)
+            chunk_num_tokens = end_token_idx - start_token_idx
 
             chunk_input = input[start_token_idx : end_token_idx]
             chunk_label = label[start_token_idx : end_token_idx]
 
             chunk_logit = chunk_input @ weight.T + bias[None, :]
 
-            # the below operations can be fused into a triton kernel
-            # 1. online softmax happens here (fp32 precision)
+            # the below operations(chunk cross entropy) can be fused into a triton kernel
+            # 0. one triton program handles one row
+            # 1. online softmax (fp32 precision), vocab_size can be large
             # 2. compute the cross entropy for each token
             # 3. update the logit in-place (scatter_add_ and mul)
-            
+
+            chunk_logit = chunk_logit.contiguous()
+            chunk_label = chunk_label.contiguous()
+
+            BLOCK_SIZE_N = min(MAX_FUSED_SIZE, triton.next_power_of_2(vocab_size))
+
+            _entropy_fwd_bwd_kernel[(chunk_num_tokens,)](
+                chunk_logit,
+                chunk_label,
+                loss_per_token,
+                scale,
+                chunk_logit.stride(0),
+                chunk_logit.stride(1),
+                vocab_size,
+                BLOCK_SIZE_N,
+            )
 
             chunk_logit_row_max = chunk_logit.float().max(dim=1, keepdim=True).values
             chunk_logit = chunk_logit - chunk_logit_row_max
@@ -101,7 +137,6 @@ class FusedLinearEntropy(torch.autograd.Function):
                                                        .squeeze(1).log()
 
             loss_per_token[start_token_idx : end_token_idx] = chunk_cross_entropy
-
 
             chunk_logit_softmax.scatter_add_(
                 dim=1, index=chunk_label[:, None], src=-torch.ones_like(chunk_logit_softmax)
