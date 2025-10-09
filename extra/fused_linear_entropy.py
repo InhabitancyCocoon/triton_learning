@@ -25,6 +25,8 @@ https://www.cnblogs.com/zzk0/p/15173022.html
 
 https://docs.pytorch.org/docs/stable/amp.html
 
+https://github1s.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/cross_entropy.py
+
 """
 
 import torch
@@ -82,16 +84,21 @@ class FusedLinearEntropy(torch.autograd.Function):
             chunk_label = label[start_token_idx : end_token_idx]
 
             chunk_logit = chunk_input @ weight.T + bias[None, :]
-            chunk_logit_row_max = chunk_logit.max(dim=1, keepdim=True).values
 
+            # the below operations can be fused into a triton kernel
+            # 1. online softmax happens here (fp32 precision)
+            # 2. compute the cross entropy for each token
+            # 3. update the logit in-place (scatter_add_ and mul)
+            
+
+            chunk_logit_row_max = chunk_logit.float().max(dim=1, keepdim=True).values
             chunk_logit = chunk_logit - chunk_logit_row_max
             chunk_logit_exp = chunk_logit.exp()
             chunk_logit_exp_row_sum = chunk_logit_exp.sum(dim=1, keepdim=True)
             chunk_logit_softmax = chunk_logit_exp / chunk_logit_exp_row_sum
 
-            chunk_cross_entropy = - chunk_logit_softmax.log() \
-                                                       .gather(dim=1,index=chunk_label[:, None]) \
-                                                       .squeeze(1)
+            chunk_cross_entropy = - chunk_logit_softmax.gather(dim=1,index=chunk_label[:, None]) \
+                                                       .squeeze(1).log()
 
             loss_per_token[start_token_idx : end_token_idx] = chunk_cross_entropy
 
@@ -103,6 +110,7 @@ class FusedLinearEntropy(torch.autograd.Function):
             chunk_grad_softmax = chunk_logit_softmax * scale
 
             # chunk linear backward
+            chunk_grad_softmax = chunk_grad_softmax.to(weight.dtype)
             chunk_grad_input = chunk_grad_softmax @ weight
             grad_input[start_token_idx : end_token_idx] = chunk_grad_input
             grad_weight += chunk_grad_softmax.T @ chunk_input
