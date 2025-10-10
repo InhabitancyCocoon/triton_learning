@@ -169,9 +169,9 @@ def test_linear_entropy(B, SEQ, H, num_classes, reduction):
         ref_loss.backward()
         loss.backward()
 
-    torch.testing.assert_close(ref_input.grad, input.grad)
-    torch.testing.assert_close(ref_weight.grad, weight.grad)
-    torch.testing.assert_close(ref_bias.grad, bias.grad)
+    torch.testing.assert_close(input.grad, ref_input.grad)
+    torch.testing.assert_close(weight.grad, ref_weight.grad)
+    torch.testing.assert_close(bias.grad, ref_bias.grad)
 
 
 if __name__ == "__main__":
