@@ -43,6 +43,13 @@ torch.cuda.get_device_capability()
 - check [autodl github](https://www.autodl.com/docs/network_turbo/) for github access `source /etc/network_turbo`
 
 
+- debug
+
+```
+export TRITON_INTERPRET=1
+unset TRITON_INTERPRET
+```
+
 ### link
 
 [triton_tutorial](https://github1s.com/triton-lang/triton/blob/v3.4.0/python/tutorials/)
